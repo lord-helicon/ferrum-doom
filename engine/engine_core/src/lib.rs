@@ -123,7 +123,7 @@ impl DoomCore {
 
         let mut players_in_game = Box::new([false; MAXPLAYERS]);
         players_in_game[0] = true;
-        let mut players = Box::new(std::array::from_fn(|_| Player::default()));
+        let players = Box::new(std::array::from_fn(|_| Player::default()));
 
         let mut sound = Snd::new(&wad_data)
             .map_err(|e| anyhow::anyhow!("failed to create nosnd server: {e}"))?;

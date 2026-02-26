@@ -174,8 +174,8 @@ impl PVS {
 
         // Write header and data sizes
         file.write_all(b"PVS2")?;
-        file.write_all(&self.subsector_count.to_le_bytes())?;
-        file.write_all(&self.visibility_data.data.len().to_le_bytes())?;
+        file.write_all(&(self.subsector_count as u64).to_le_bytes())?;
+        file.write_all(&(self.visibility_data.data.len() as u64).to_le_bytes())?;
 
         // Write visibility data as bytes
         let data_bytes: Vec<u8> = self
@@ -237,10 +237,10 @@ impl PVS {
         // Read sizes
         let mut size_buffer = [0u8; 8];
         file.read_exact(&mut size_buffer)?;
-        let subsector_count = usize::from_le_bytes(size_buffer);
+        let subsector_count = u64::from_le_bytes(size_buffer) as usize;
 
         file.read_exact(&mut size_buffer)?;
-        let data_len = usize::from_le_bytes(size_buffer);
+        let data_len = u64::from_le_bytes(size_buffer) as usize;
 
         // Read visibility data as bytes then convert to u32 words
         let mut data_bytes = vec![0u8; data_len * 4];

@@ -7,7 +7,7 @@ use crate::level::bsp3d::BSP3D;
 use crate::log::info;
 use crate::{LineDefFlags, MapPtr, PicData, PVS};
 use glam::Vec2;
-#[cfg(Debug)]
+#[cfg(debug_assertions)]
 use log::error;
 use log::{debug, warn};
 use math::{bam_to_radian, circle_line_collide, fixed_to_float, Angle};
@@ -879,12 +879,12 @@ impl BSPTrace {
         *count += 1;
         if node_id & IS_SSECTOR_MASK != 0 {
             let node = node_id & !IS_SSECTOR_MASK;
-            #[cfg(Debug)]
+            #[cfg(debug_assertions)]
             if (node as usize) >= map.nodes.len() {
                 error!(
                     "Node {} masked to {} was out of bounds",
                     node_id,
-                    node_id & !IS_ZSSECTOR_MASK
+                    node_id & !IS_SSECTOR_MASK
                 );
                 return;
             }
@@ -933,12 +933,12 @@ impl BSPTrace {
 
         if node_id & IS_SSECTOR_MASK == IS_SSECTOR_MASK {
             let node = node_id & !IS_SSECTOR_MASK;
-            #[cfg(Debug)]
+            #[cfg(debug_assertions)]
             if (node as usize) >= map.nodes.len() {
                 error!(
                     "Node {} masked to {} was out of bounds",
                     node_id,
-                    node_id & !IS_ZSSECTOR_MASK
+                    node_id & !IS_SSECTOR_MASK
                 );
                 return;
             }
