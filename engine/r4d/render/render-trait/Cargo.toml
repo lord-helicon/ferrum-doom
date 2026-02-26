@@ -1,0 +1,12 @@
+[package]
+name = "render-trait"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gameplay.workspace = true
+
+[dev-dependencies]
+wad.workspace = true

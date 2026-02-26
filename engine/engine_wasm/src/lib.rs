@@ -6,9 +6,9 @@ use engine_platform::{EngineConfig, InputEvent, InputEventKind};
 use engine_render::{FRAME_HEIGHT, FRAME_PIXELS, FRAME_WIDTH};
 use engine_sound::Mixer;
 use engine_wad::Wad;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_int};
-use std::sync::{Mutex, OnceLock};
 
 const DEFAULT_SAMPLE_RATE: u32 = 44_100;
 
@@ -39,17 +39,16 @@ impl Runtime {
     }
 }
 
-static RUNTIME: OnceLock<Mutex<Option<Runtime>>> = OnceLock::new();
-
-fn runtime_lock() -> &'static Mutex<Option<Runtime>> {
-    RUNTIME.get_or_init(|| Mutex::new(None))
+thread_local! {
+    static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(None) };
 }
 
 fn with_runtime_mut<T>(f: impl FnOnce(&mut Runtime) -> T) -> Option<T> {
-    let lock = runtime_lock();
-    let mut guard = lock.lock().ok()?;
-    let runtime = guard.as_mut()?;
-    Some(f(runtime))
+    RUNTIME.with(|slot| {
+        let mut borrow = slot.borrow_mut();
+        let runtime = borrow.as_mut()?;
+        Some(f(runtime))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -65,7 +64,7 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: usize) {
     if ptr.is_null() || len == 0 {
         return;
     }
-    // SAFETY: pointer must have been returned from alloc() with same len.
+
     unsafe {
         let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len));
     }
@@ -100,13 +99,10 @@ pub extern "C" fn init(
 
     match Runtime::new(config) {
         Ok(rt) => {
-            let lock = runtime_lock();
-            if let Ok(mut guard) = lock.lock() {
-                *guard = Some(rt);
-                0
-            } else {
-                -6
-            }
+            RUNTIME.with(|slot| {
+                *slot.borrow_mut() = Some(rt);
+            });
+            0
         }
         Err(_) => -5,
     }
@@ -136,16 +132,12 @@ pub extern "C" fn set_input(events_ptr: *const InputEvent, events_len: usize) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn queue_key_event(pressed: i32, key: i32) {
-    let _ = with_runtime_mut(|rt| {
-        rt.input.keys.push_back((pressed != 0, key as u8));
-    });
+    let _ = with_runtime_mut(|rt| rt.input.keys.push_back((pressed != 0, key as u8)));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn queue_mouse_event(buttons: i32, dx: i32, dy: i32) {
-    let _ = with_runtime_mut(|rt| {
-        rt.input.mouse.push_back((buttons, dx, dy));
-    });
+    let _ = with_runtime_mut(|rt| rt.input.mouse.push_back((buttons, dx, dy)));
 }
 
 #[unsafe(no_mangle)]
@@ -156,6 +148,12 @@ pub extern "C" fn run_tics(count: u32) {
 
     let _ = with_runtime_mut(|rt| {
         for _ in 0..count {
+            while let Some((pressed, key)) = rt.input.keys.pop_front() {
+                rt.core.key_event(pressed, key);
+            }
+            while let Some((_buttons, dx, dy)) = rt.input.mouse.pop_front() {
+                rt.core.mouse_event(dx, dy);
+            }
             rt.core.tick();
         }
         rt.mixer.mix_tics(count);
@@ -245,15 +243,14 @@ pub extern "C" fn music_event_data_len() -> usize {
 pub extern "C" fn current_state_crc() -> u32 {
     let mut hasher = crc32fast::Hasher::new();
     let _ = with_runtime_mut(|rt| {
-        let fb_ptr = rt.core.framebuffer_ptr();
-        if !fb_ptr.is_null() {
-            let fb = unsafe { std::slice::from_raw_parts(fb_ptr as *const u8, FRAME_PIXELS * 4) };
-            hasher.update(fb);
+        for px in rt.core.framebuffer_words() {
+            hasher.update(&px.to_le_bytes());
         }
     });
     hasher.finalize()
 }
 
+// Legacy ABI symbols retained for host compatibility.
 #[unsafe(no_mangle)]
 pub extern "C" fn DG_Init() {}
 
@@ -269,44 +266,13 @@ pub extern "C" fn DG_GetTicksMs() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_GetKey(pressed: *mut c_int, key: *mut u8) -> c_int {
-    if pressed.is_null() || key.is_null() {
-        return 0;
-    }
-
-    with_runtime_mut(|rt| {
-        if let Some((is_pressed, keycode)) = rt.input.keys.pop_front() {
-            unsafe {
-                *pressed = i32::from(is_pressed);
-                *key = keycode;
-            }
-            1
-        } else {
-            0
-        }
-    })
-    .unwrap_or(0)
+pub extern "C" fn DG_GetKey(_pressed: *mut c_int, _key: *mut u8) -> c_int {
+    0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_GetMouse(buttons: *mut c_int, xrel: *mut c_int, yrel: *mut c_int) -> c_int {
-    if buttons.is_null() || xrel.is_null() || yrel.is_null() {
-        return 0;
-    }
-
-    with_runtime_mut(|rt| {
-        if let Some((b, x, y)) = rt.input.mouse.pop_front() {
-            unsafe {
-                *buttons = b;
-                *xrel = x;
-                *yrel = y;
-            }
-            1
-        } else {
-            0
-        }
-    })
-    .unwrap_or(0)
+pub extern "C" fn DG_GetMouse(_buttons: *mut c_int, _xrel: *mut c_int, _yrel: *mut c_int) -> c_int {
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -314,91 +280,47 @@ pub extern "C" fn DG_SetWindowTitle(_title: *const c_char) {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn DG_RustSfxStart(
-    channel: c_int,
-    data_ptr: *const u8,
-    data_len: c_int,
-    samplerate: c_int,
-    volume: c_int,
-    sep: c_int,
+    _channel: c_int,
+    _data_ptr: *const u8,
+    _data_len: c_int,
+    _samplerate: c_int,
+    _volume: c_int,
+    _sep: c_int,
 ) {
-    if data_ptr.is_null() || data_len <= 0 || samplerate <= 0 || channel < 0 {
-        return;
-    }
-
-    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) };
-    let _ = with_runtime_mut(|rt| {
-        rt.mixer
-            .start_sound(channel as usize, bytes, samplerate as u32, volume, sep);
-    });
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_RustSfxStop(channel: c_int) {
-    if channel < 0 {
-        return;
-    }
-    let _ = with_runtime_mut(|rt| rt.mixer.stop_sound(channel as usize));
+pub extern "C" fn DG_RustSfxStop(_channel: c_int) {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn DG_RustSfxUpdateParams(_channel: c_int, _volume: c_int, _sep: c_int) {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn DG_RustSfxIsPlaying(_channel: c_int) -> c_int {
+    0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_RustSfxUpdateParams(channel: c_int, volume: c_int, sep: c_int) {
-    if channel < 0 {
-        return;
-    }
-    let _ = with_runtime_mut(|rt| rt.mixer.update_sound_params(channel as usize, volume, sep));
-}
+pub extern "C" fn DG_RustMusicRegister(_song_id: c_int, _data_ptr: *const u8, _data_len: c_int) {}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_RustSfxIsPlaying(channel: c_int) -> c_int {
-    if channel < 0 {
-        return 0;
-    }
-    with_runtime_mut(|rt| i32::from(rt.mixer.sound_is_playing(channel as usize))).unwrap_or(0)
-}
+pub extern "C" fn DG_RustMusicUnregister(_song_id: c_int) {}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_RustMusicRegister(song_id: c_int, data_ptr: *const u8, data_len: c_int) {
-    if song_id < 0 || data_ptr.is_null() || data_len <= 0 {
-        return;
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) };
-    let _ = with_runtime_mut(|rt| rt.music.register_song(song_id as u32, bytes.to_vec()));
-}
+pub extern "C" fn DG_RustMusicPlay(_song_id: c_int, _looping: c_int) {}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_RustMusicUnregister(song_id: c_int) {
-    if song_id < 0 {
-        return;
-    }
-    let _ = with_runtime_mut(|rt| rt.music.unregister_song(song_id as u32));
-}
+pub extern "C" fn DG_RustMusicStop() {}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_RustMusicPlay(song_id: c_int, looping: c_int) {
-    if song_id < 0 {
-        return;
-    }
-    let _ = with_runtime_mut(|rt| rt.music.play_song(song_id as u32, looping != 0));
-}
+pub extern "C" fn DG_RustMusicPause(_paused: c_int) {}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn DG_RustMusicStop() {
-    let _ = with_runtime_mut(|rt| rt.music.stop_song());
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn DG_RustMusicPause(paused: c_int) {
-    let _ = with_runtime_mut(|rt| rt.music.set_pause(paused != 0));
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn DG_RustMusicVolume(volume: c_int) {
-    let _ = with_runtime_mut(|rt| rt.music.set_volume(volume));
-}
+pub extern "C" fn DG_RustMusicVolume(_volume: c_int) {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn DG_RustMusicIsPlaying() -> c_int {
-    1
+    0
 }
 
 #[cfg(test)]
@@ -408,7 +330,6 @@ mod tests {
     fn write_buf(bytes: &[u8]) -> (usize, usize) {
         let ptr = alloc(bytes.len()) as usize;
         let dst = ptr as *mut u8;
-        // SAFETY: allocation returned by alloc is valid for bytes.len().
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
         }

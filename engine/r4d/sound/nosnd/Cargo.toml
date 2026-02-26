@@ -1,0 +1,13 @@
+[package]
+name = "sound-nosnd"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+
+[dependencies]
+wad.workspace = true
+sound-traits.workspace = true
+log.workspace = true

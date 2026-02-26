@@ -5,7 +5,7 @@ This repository ships a browser-playable Doom source-port pipeline with a Rust-f
 ## Repository Layout
 
 - `engine/`
-  - `engine_core` - Doom core integration layer (C source + Rust wrapper).
+  - `engine_core` - Rust-native engine core loop (35 Hz tic simulation + software framebuffer output).
   - `engine_wad` - pure Rust WAD parser and lump indexing tests.
   - `engine_render` - framebuffer constants and render surface metadata.
   - `engine_sound` - Rust SFX mixer and ring-buffer PCM output.
@@ -20,12 +20,12 @@ This repository ships a browser-playable Doom source-port pipeline with a Rust-f
 
 ### `engine_core`
 
-- Compiles Doom core C modules from `engine_core/c_src/doomgeneric`.
-- Exposes Rust wrappers around:
-  - `doomgeneric_Create(argc, argv)`
-  - `doomgeneric_Tick()`
-  - `DG_ScreenBuffer`
-- C platform callbacks are implemented in `engine_wasm` (`DG_GetKey`, `DG_GetMouse`, timing hooks, audio bridge callbacks).
+- Pure Rust core implementation; no bundled C engine source path.
+- Maintains:
+  - fixed-tic update loop
+  - key/mouse state application
+  - software framebuffer generation in engine memory
+- Exposes stable Rust methods for `tick()`, key/mouse events, and framebuffer access.
 
 ### `engine_wad`
 
@@ -42,7 +42,6 @@ This repository ships a browser-playable Doom source-port pipeline with a Rust-f
 ### `engine_music`
 
 - Maintains song registration cache and event queue (`Register`, `Play`, `Stop`, etc.).
-- The C music backend (`i_websound.c`) converts MUS to MIDI using `mus2mid.c` + `memio.c` before registering events.
 - Browser host synthesizes MIDI via WebAudio/Tone.
 
 ### `engine_platform`

@@ -7,6 +7,13 @@ members = [
     "engine_music",
     "engine_platform",
     "engine_wasm",
+    "r4d/math",
+    "r4d/wad",
+    "r4d/sound/traits",
+    "r4d/sound/nosnd",
+    "r4d/gameplay",
+    "r4d/render/render-trait",
+    "r4d/render/software25d",
 ]
 resolver = "2"
 
@@ -23,3 +30,16 @@ crc32fast = "1.5.0"
 thiserror = "2.0.17"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+glam = "0.30.5"
+log = "0.4.28"
+coarse-prof = "0.2.6"
+dirs = "5.0.1"
+
+# room4doom-derived crate aliases used in workspace-local paths
+math = { path = "r4d/math" }
+wad = { path = "r4d/wad" }
+sound-traits = { path = "r4d/sound/traits" }
+sound-nosnd = { path = "r4d/sound/nosnd" }
+gameplay = { path = "r4d/gameplay" }
+render-trait = { path = "r4d/render/render-trait" }
+software25d = { path = "r4d/render/software25d" }
