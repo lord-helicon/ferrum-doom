@@ -125,6 +125,7 @@ let scriptNode: ScriptProcessorNode | null = null;
 let musicGain: Tone.Gain | null = null;
 let songCache = new Map<number, Uint8Array>();
 let activeSongTimeout: number | null = null;
+const gamepadPressed = new Map<number, boolean>();
 
 function setStatus(msg: string): void {
   statusEl.textContent = msg;
@@ -226,6 +227,46 @@ function pushKeyEvent(ev: KeyboardEvent, pressed: boolean): void {
   }
   exportsRef.queue_key_event(pressed ? 1 : 0, mapped);
   ev.preventDefault();
+}
+
+function pushVirtualKey(code: number, pressed: boolean): void {
+  if (!exportsRef) {
+    return;
+  }
+  exportsRef.queue_key_event(pressed ? 1 : 0, code);
+}
+
+function setGamepadKey(code: number, pressed: boolean): void {
+  const prev = gamepadPressed.get(code) ?? false;
+  if (prev === pressed) {
+    return;
+  }
+  gamepadPressed.set(code, pressed);
+  pushVirtualKey(code, pressed);
+}
+
+function pollGamepad(): void {
+  const pads = navigator.getGamepads?.();
+  if (!pads || !exportsRef) {
+    return;
+  }
+  const gp = pads[0];
+  if (!gp) {
+    return;
+  }
+
+  const x = gp.axes[0] ?? 0;
+  const y = gp.axes[1] ?? 0;
+  const dead = 0.3;
+
+  setGamepadKey(KEY.LEFT, x < -dead || !!gp.buttons[14]?.pressed);
+  setGamepadKey(KEY.RIGHT, x > dead || !!gp.buttons[15]?.pressed);
+  setGamepadKey(KEY.UP, y < -dead || !!gp.buttons[12]?.pressed);
+  setGamepadKey(KEY.DOWN, y > dead || !!gp.buttons[13]?.pressed);
+  setGamepadKey(KEY.FIRE, !!gp.buttons[0]?.pressed || !!gp.buttons[7]?.pressed);
+  setGamepadKey(KEY.USE, !!gp.buttons[1]?.pressed);
+  setGamepadKey(KEY.RSHIFT, !!gp.buttons[4]?.pressed);
+  setGamepadKey(KEY.RALT, !!gp.buttons[5]?.pressed);
 }
 
 function buttonMask(e: MouseEvent): number {
@@ -391,6 +432,7 @@ async function frame(ts: number): Promise<void> {
   if (!exportsRef) {
     return;
   }
+  pollGamepad();
 
   const dt = lastTs > 0 ? ts - lastTs : 0;
   lastTs = ts;
