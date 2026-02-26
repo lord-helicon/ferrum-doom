@@ -1,0 +1,5 @@
+{
+  "name": "web-doom-rust-wasm",
+  "install": "bash .cursor/scripts/setup_cloud_env.sh",
+  "start": "echo 'cloud agent environment ready'"
+}
