@@ -1,0 +1,14 @@
+{
+  "name": "web-doom",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "platform_web"
+  ],
+  "scripts": {
+    "build:wasm": "bash scripts/build_wasm.sh",
+    "dev": "npm run build:wasm && npm run dev --workspace platform_web",
+    "build": "npm run build:wasm && npm run build --workspace platform_web",
+    "test": "cargo test --manifest-path engine/Cargo.toml"
+  }
+}

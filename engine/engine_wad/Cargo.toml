@@ -1,0 +1,11 @@
+[package]
+name = "engine_wad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+crc32fast.workspace = true

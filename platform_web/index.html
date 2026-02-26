@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Web Doom (Rust + WASM)</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #111;
+        color: #eee;
+        font-family: system-ui, sans-serif;
+      }
+      #app {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        height: 100vh;
+      }
+      #controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+        padding: 0.6rem;
+        background: #1b1b1b;
+      }
+      canvas {
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        margin: auto;
+        max-width: 100vw;
+        max-height: calc(100vh - 80px);
+        border: 1px solid #333;
+      }
+      .status {
+        min-width: 260px;
+        font-size: 0.9rem;
+      }
+      input[type="range"] {
+        width: 120px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="controls">
+        <input id="wad-file" type="file" accept=".wad,.WAD" />
+        <input id="wad-path" type="text" value="DOOM.WAD" title="Virtual WAD path" />
+        <button id="boot-btn">Boot</button>
+        <button id="pointer-btn">Pointer Lock</button>
+        <label>Scale <input id="scale" type="range" min="1" max="6" value="2" /></label>
+        <label>SFX <input id="sfx-volume" type="range" min="0" max="100" value="100" /></label>
+        <label>Music <input id="music-volume" type="range" min="0" max="100" value="70" /></label>
+        <label><input id="aspect-correct" type="checkbox" checked /> Aspect-correct</label>
+        <span class="status" id="status">Idle</span>
+      </div>
+      <canvas id="screen" width="640" height="400"></canvas>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
