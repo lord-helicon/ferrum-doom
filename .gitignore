@@ -1,0 +1,19 @@
+# Rust
+engine/target/
+**/*.rs.bk
+
+# Node/Vite
+node_modules/
+platform_web/node_modules/
+platform_web/dist/
+platform_web/public/engine_wasm.wasm
+platform_web/*.tsbuildinfo
+platform_web/tsconfig.tsbuildinfo
+
+# Local toolchain/cache artifacts
+_toolchains/
+_upstream_*/
+
+# Misc
+.DS_Store
+*.log
