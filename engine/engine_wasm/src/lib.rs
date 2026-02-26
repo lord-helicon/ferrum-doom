@@ -6,9 +6,9 @@ use engine_platform::{EngineConfig, InputEvent, InputEventKind};
 use engine_render::{FRAME_HEIGHT, FRAME_PIXELS, FRAME_WIDTH};
 use engine_sound::Mixer;
 use engine_wad::Wad;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_int};
-use std::sync::{Mutex, OnceLock};
 
 const DEFAULT_SAMPLE_RATE: u32 = 44_100;
 
@@ -39,17 +39,16 @@ impl Runtime {
     }
 }
 
-static RUNTIME: OnceLock<Mutex<Option<Runtime>>> = OnceLock::new();
-
-fn runtime_lock() -> &'static Mutex<Option<Runtime>> {
-    RUNTIME.get_or_init(|| Mutex::new(None))
+thread_local! {
+    static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(None) };
 }
 
 fn with_runtime_mut<T>(f: impl FnOnce(&mut Runtime) -> T) -> Option<T> {
-    let lock = runtime_lock();
-    let mut guard = lock.lock().ok()?;
-    let runtime = guard.as_mut()?;
-    Some(f(runtime))
+    RUNTIME.with(|slot| {
+        let mut borrow = slot.borrow_mut();
+        let runtime = borrow.as_mut()?;
+        Some(f(runtime))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -100,13 +99,10 @@ pub extern "C" fn init(
 
     match Runtime::new(config) {
         Ok(rt) => {
-            let lock = runtime_lock();
-            if let Ok(mut guard) = lock.lock() {
-                *guard = Some(rt);
-                0
-            } else {
-                -6
-            }
+            RUNTIME.with(|slot| {
+                *slot.borrow_mut() = Some(rt);
+            });
+            0
         }
         Err(_) => -5,
     }

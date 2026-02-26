@@ -1,10 +1,18 @@
-#![deny(unsafe_code)]
+#![allow(unsafe_code)]
 
 use anyhow::Result;
 use engine_render::{FRAME_HEIGHT, FRAME_PIXELS, FRAME_WIDTH};
-
-pub const FRACBITS: i32 = 16;
-pub const FRACUNIT: i32 = 1 << FRACBITS;
+use gameplay::tic_cmd::{TicCmd, ANGLETURN, FORWARDMOVE, SIDEMOVE, TIC_CMD_BUTTONS};
+use gameplay::{
+    m_clear_random, respawn_specials, spawn_specials, update_specials, GameAction, GameMode,
+    GameOptions, Level, MapObject, PicData, Player, Skill, MAXPLAYERS,
+};
+use render_trait::{BufferSize, DrawBuffer, SOFT_PIXEL_CHANNELS};
+use software25d::Software25D;
+use sound_nosnd::{Snd, SndServerTx};
+use sound_traits::{SoundServer, SoundServerTic};
+use std::path::Path;
+use wad::WadData;
 
 const KEY_LEFT: u8 = 0xac;
 const KEY_RIGHT: u8 = 0xae;
@@ -12,85 +20,182 @@ const KEY_UP: u8 = 0xad;
 const KEY_DOWN: u8 = 0xaf;
 const KEY_STRAFE_L: u8 = 0xa0;
 const KEY_STRAFE_R: u8 = 0xa1;
+const KEY_USE: u8 = 0xa2;
+const KEY_FIRE: u8 = 0xa3;
 const KEY_SPEED: u8 = 0xb6;
 
-const MAP_W: usize = 16;
-const MAP_H: usize = 16;
-const MAP: [u8; MAP_W * MAP_H] = [
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-    1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1,
-    1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1,
-    1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1,
-    1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1,
-    1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1,
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1,
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-];
+struct SoftFrameBuffer {
+    size: BufferSize,
+    buf: Vec<u8>,
+    stride: usize,
+}
 
-#[derive(Clone)]
+impl SoftFrameBuffer {
+    fn new(width: usize, height: usize) -> Self {
+        let stride = width * SOFT_PIXEL_CHANNELS;
+        Self {
+            size: BufferSize::new(width, height),
+            buf: vec![0; height * stride],
+            stride,
+        }
+    }
+
+    fn clear(&mut self, rgba: [u8; 4]) {
+        for px in self.buf.chunks_exact_mut(4) {
+            px.copy_from_slice(&rgba);
+        }
+    }
+}
+
+impl DrawBuffer for SoftFrameBuffer {
+    fn size(&self) -> &BufferSize {
+        &self.size
+    }
+
+    fn set_pixel(&mut self, x: usize, y: usize, colour: &[u8; 4]) {
+        if x >= self.size.width_usize() || y >= self.size.height_usize() {
+            return;
+        }
+        let idx = self.get_buf_index(x, y);
+        self.buf[idx..idx + SOFT_PIXEL_CHANNELS].copy_from_slice(colour);
+    }
+
+    fn read_pixel(&self, x: usize, y: usize) -> [u8; SOFT_PIXEL_CHANNELS] {
+        if x >= self.size.width_usize() || y >= self.size.height_usize() {
+            return [0, 0, 0, 255];
+        }
+        let idx = self.get_buf_index(x, y);
+        [
+            self.buf[idx],
+            self.buf[idx + 1],
+            self.buf[idx + 2],
+            self.buf[idx + 3],
+        ]
+    }
+
+    fn get_buf_index(&self, x: usize, y: usize) -> usize {
+        y * self.stride + x * SOFT_PIXEL_CHANNELS
+    }
+
+    fn pitch(&self) -> usize {
+        self.stride
+    }
+
+    fn buf_mut(&mut self) -> &mut [u8] {
+        &mut self.buf
+    }
+
+    fn debug_flip_and_present(&mut self) {}
+}
+
 pub struct DoomCore {
+    wad_data: WadData,
+    game_mode: GameMode,
+    options: GameOptions,
+    players_in_game: Box<[bool; MAXPLAYERS]>,
+    players: Box<[Player; MAXPLAYERS]>,
+    pic_data: PicData,
+    level: Option<Level>,
+    renderer: Software25D,
+    draw: SoftFrameBuffer,
     framebuffer: Box<[u32]>,
-    tic: u64,
-    pos_x: i32,
-    pos_y: i32,
-    angle_deg: i32,
-    keys: [bool; 256],
+    key_state: [bool; 256],
     mouse_dx: i32,
+    mouse_dy: i32,
+    sound: Snd,
+    snd_tx: SndServerTx,
 }
 
 impl DoomCore {
-    pub fn create(_args: &[String]) -> Result<Self> {
-        Ok(Self {
+    pub fn create(args: &[String]) -> Result<Self> {
+        let iwad = parse_iwad_arg(args).unwrap_or_else(|| "DOOM.WAD".to_string());
+        let wad_data = WadData::new(Path::new(&iwad));
+        let game_mode = detect_game_mode(&wad_data);
+
+        let mut options = GameOptions::default();
+        options.iwad = iwad;
+        options.skill = Skill::Medium;
+        options.episode = 1;
+        options.map = 1;
+        options.warp = true;
+        options.hi_res = true;
+        options.autostart = true;
+
+        let mut players_in_game = Box::new([false; MAXPLAYERS]);
+        players_in_game[0] = true;
+        let mut players = Box::new(std::array::from_fn(|_| Player::default()));
+
+        let mut sound = Snd::new(&wad_data)
+            .map_err(|e| anyhow::anyhow!("failed to create nosnd server: {e}"))?;
+        let snd_tx = sound
+            .init()
+            .map_err(|e| anyhow::anyhow!("failed to initialize nosnd channel: {e}"))?;
+
+        let pic_data = PicData::init(&wad_data);
+
+        let mut core = Self {
+            wad_data,
+            game_mode,
+            options,
+            players_in_game,
+            players,
+            pic_data,
+            level: None,
+            renderer: Software25D::new(
+                90f32.to_radians(),
+                FRAME_WIDTH as f32,
+                FRAME_HEIGHT as f32,
+                true,
+                false,
+            ),
+            draw: SoftFrameBuffer::new(FRAME_WIDTH, FRAME_HEIGHT),
             framebuffer: vec![0u32; FRAME_PIXELS].into_boxed_slice(),
-            tic: 0,
-            pos_x: 3 * FRACUNIT,
-            pos_y: 3 * FRACUNIT,
-            angle_deg: 0,
-            keys: [false; 256],
+            key_state: [false; 256],
             mouse_dx: 0,
-        })
+            mouse_dy: 0,
+            sound,
+            snd_tx,
+        };
+
+        m_clear_random();
+        core.load_current_level();
+        Ok(core)
     }
 
     pub fn key_event(&mut self, pressed: bool, key: u8) {
-        self.keys[key as usize] = pressed;
+        self.key_state[key as usize] = pressed;
     }
 
-    pub fn mouse_event(&mut self, dx: i32, _dy: i32) {
+    pub fn mouse_event(&mut self, dx: i32, dy: i32) {
         self.mouse_dx = self.mouse_dx.saturating_add(dx);
+        self.mouse_dy = self.mouse_dy.saturating_add(dy);
     }
 
     pub fn tick(&mut self) {
-        self.tic = self.tic.wrapping_add(1);
+        self.apply_input();
 
-        let mut turn = 0i32;
-        if self.keys[KEY_LEFT as usize] {
-            turn -= 4;
-        }
-        if self.keys[KEY_RIGHT as usize] {
-            turn += 4;
-        }
-        turn += self.mouse_dx / 2;
-        self.mouse_dx = 0;
+        if let Some(level) = self.level.as_mut() {
+            for i in 0..MAXPLAYERS {
+                if self.players_in_game[i] {
+                    let _ = self.players[i].think(level);
+                }
+            }
 
-        self.angle_deg = (self.angle_deg + turn).rem_euclid(360);
+            unsafe {
+                let lev = &mut *(level as *mut Level);
+                level.thinkers.run_thinkers(lev);
+            }
 
-        let speed = if self.keys[KEY_SPEED as usize] { 7 } else { 4 } * FRACUNIT / 35;
-        let mut move_forward = 0i32;
-        if self.keys[KEY_UP as usize] {
-            move_forward += speed;
-        }
-        if self.keys[KEY_DOWN as usize] {
-            move_forward -= speed;
-        }
-        let mut move_strafe = 0i32;
-        if self.keys[KEY_STRAFE_L as usize] {
-            move_strafe -= speed;
-        }
-        if self.keys[KEY_STRAFE_R as usize] {
-            move_strafe += speed;
+            level.level_time = level.level_time.saturating_add(1);
+            update_specials(level, &mut self.pic_data);
+            respawn_specials(level);
+
+            if let Some(action) = level.game_action.take() {
+                self.handle_game_action(action);
+            }
         }
 
-        self.apply_movement(move_forward, move_strafe);
+        self.sound.tic();
         self.render_frame();
     }
 
@@ -102,118 +207,158 @@ impl DoomCore {
         &self.framebuffer
     }
 
-    fn apply_movement(&mut self, forward: i32, strafe: i32) {
-        if forward == 0 && strafe == 0 {
-            return;
+    fn apply_input(&mut self) {
+        let mut cmd = TicCmd::new();
+        let speed = usize::from(self.key_state[KEY_SPEED as usize]);
+
+        if self.key_state[KEY_UP as usize] {
+            cmd.forwardmove = cmd.forwardmove.saturating_add(FORWARDMOVE[speed] as i8);
+        }
+        if self.key_state[KEY_DOWN as usize] {
+            cmd.forwardmove = cmd.forwardmove.saturating_sub(FORWARDMOVE[speed] as i8);
+        }
+        if self.key_state[KEY_STRAFE_L as usize] {
+            cmd.sidemove = cmd.sidemove.saturating_sub(SIDEMOVE[speed] as i8);
+        }
+        if self.key_state[KEY_STRAFE_R as usize] {
+            cmd.sidemove = cmd.sidemove.saturating_add(SIDEMOVE[speed] as i8);
         }
 
-        let a = (self.angle_deg as f32).to_radians();
-        let sin_a = a.sin();
-        let cos_a = a.cos();
-
-        let dx = (forward as f32 * cos_a - strafe as f32 * sin_a) as i32;
-        let dy = (forward as f32 * sin_a + strafe as f32 * cos_a) as i32;
-
-        let next_x = self.pos_x.saturating_add(dx);
-        let next_y = self.pos_y.saturating_add(dy);
-
-        if !is_wall(next_x, self.pos_y) {
-            self.pos_x = next_x;
+        if self.key_state[KEY_LEFT as usize] {
+            cmd.angleturn = cmd.angleturn.saturating_add(ANGLETURN[1]);
         }
-        if !is_wall(self.pos_x, next_y) {
-            self.pos_y = next_y;
+        if self.key_state[KEY_RIGHT as usize] {
+            cmd.angleturn = cmd.angleturn.saturating_sub(ANGLETURN[1]);
         }
+
+        cmd.angleturn = cmd
+            .angleturn
+            .saturating_sub((self.mouse_dx.saturating_mul(8)) as i16);
+
+        if self.key_state[KEY_FIRE as usize] {
+            cmd.buttons |= TIC_CMD_BUTTONS.bt_attack;
+        }
+        if self.key_state[KEY_USE as usize] {
+            cmd.buttons |= TIC_CMD_BUTTONS.bt_use;
+        }
+
+        let look = (self.mouse_dy / 2).clamp(-15, 15) as i16;
+        cmd.lookdir = look;
+
+        self.players[0].cmd = cmd;
+        self.mouse_dx = 0;
+        self.mouse_dy = 0;
     }
 
     fn render_frame(&mut self) {
-        let horizon = (FRAME_HEIGHT as i32) / 2;
+        self.draw.clear([0, 0, 0, 255]);
 
-        for y in 0..FRAME_HEIGHT {
-            let color = if y as i32 <= horizon {
-                0xFF3A2C6Au32
-            } else {
-                0xFF2A1F10u32
-            };
-            let row = y * FRAME_WIDTH;
-            for x in 0..FRAME_WIDTH {
-                self.framebuffer[row + x] = color;
+        if let Some(level) = self.level.as_ref() {
+            if self.players[0].mobj().is_some() {
+                self.renderer.draw_view(
+                    &self.players[0],
+                    level,
+                    &mut self.pic_data,
+                    &mut self.draw,
+                );
             }
         }
 
-        let fov = 66.0f32;
-        let angle_base = self.angle_deg as f32;
-
-        for screen_x in 0..FRAME_WIDTH {
-            let ndc = (2.0 * screen_x as f32 / FRAME_WIDTH as f32) - 1.0;
-            let ray_angle = angle_base + ndc * (fov * 0.5);
-            let ray_rad = ray_angle.to_radians();
-            let dir_x = ray_rad.cos();
-            let dir_y = ray_rad.sin();
-
-            let dist = cast_ray(self.pos_x, self.pos_y, dir_x, dir_y);
-            let corrected = dist * ((ray_angle - angle_base).to_radians().cos().abs().max(0.2));
-            let wall_h = (FRAME_HEIGHT as f32 * 0.8 / corrected).clamp(2.0, FRAME_HEIGHT as f32);
-            let half = (wall_h / 2.0) as i32;
-            let top = (horizon - half).max(0) as usize;
-            let bot = (horizon + half).min(FRAME_HEIGHT as i32 - 1) as usize;
-
-            let shade = (255.0 / (1.0 + corrected * 0.25)).clamp(25.0, 255.0) as u32;
-            let color = 0xFF000000 | (shade << 16) | ((shade / 2) << 8) | (shade / 4);
-
-            for y in top..=bot {
-                self.framebuffer[y * FRAME_WIDTH + screen_x] = color;
-            }
+        for (idx, px) in self.draw.buf.chunks_exact(4).enumerate() {
+            self.framebuffer[idx] = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
         }
+    }
 
-        let cx = FRAME_WIDTH / 2;
-        let cy = FRAME_HEIGHT / 2;
-        for dx in -8..=8 {
-            let x = (cx as isize + dx) as usize;
-            if x < FRAME_WIDTH {
-                self.framebuffer[cy * FRAME_WIDTH + x] = 0xFFFFFFFF;
-            }
+    fn map_name(&self) -> String {
+        if matches!(self.game_mode, GameMode::Commercial) {
+            format!("MAP{:02}", self.options.map)
+        } else {
+            format!("E{}M{}", self.options.episode, self.options.map)
         }
-        for dy in -8..=8 {
-            let y = (cy as isize + dy) as usize;
-            if y < FRAME_HEIGHT {
-                self.framebuffer[y * FRAME_WIDTH + cx] = 0xFFFFFFFF;
+    }
+
+    fn load_current_level(&mut self) {
+        let map_name = self.map_name();
+
+        let mut level = unsafe {
+            Level::new_empty(
+                self.options.clone(),
+                self.game_mode,
+                self.snd_tx.clone(),
+                &self.players_in_game,
+                &mut self.players,
+            )
+        };
+
+        level.load(
+            &map_name,
+            self.game_mode,
+            &mut self.pic_data,
+            &self.wad_data,
+        );
+
+        let things = level.map_data.things().to_vec();
+        for thing in &things {
+            MapObject::p_spawn_map_thing(
+                *thing,
+                self.options.no_monsters,
+                &mut level,
+                &mut self.players[..],
+                &self.players_in_game,
+            );
+        }
+        spawn_specials(&mut level);
+
+        self.level = Some(level);
+    }
+
+    fn handle_game_action(&mut self, action: GameAction) {
+        match action {
+            GameAction::CompletedLevel | GameAction::WorldDone => {
+                if matches!(self.game_mode, GameMode::Commercial) {
+                    self.options.map = if self.options.map >= 32 {
+                        1
+                    } else {
+                        self.options.map + 1
+                    };
+                } else {
+                    self.options.map = if self.options.map >= 9 {
+                        1
+                    } else {
+                        self.options.map + 1
+                    };
+                }
+                self.load_current_level();
             }
+            GameAction::Victory => {
+                self.options.map = 1;
+                self.load_current_level();
+            }
+            GameAction::LoadLevel => self.load_current_level(),
+            _ => {}
         }
     }
 }
 
-fn cast_ray(start_x: i32, start_y: i32, dir_x: f32, dir_y: f32) -> f32 {
-    let mut t = 0.0f32;
-    let step = 0.02f32;
-
-    for _ in 0..2048 {
-        let x = start_x as f32 / FRACUNIT as f32 + dir_x * t;
-        let y = start_y as f32 / FRACUNIT as f32 + dir_y * t;
-
-        let ix = x.floor() as i32;
-        let iy = y.floor() as i32;
-
-        if ix < 0 || iy < 0 || ix >= MAP_W as i32 || iy >= MAP_H as i32 {
-            return 32.0;
+fn parse_iwad_arg(args: &[String]) -> Option<String> {
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i] == "-iwad" && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
         }
-
-        if MAP[iy as usize * MAP_W + ix as usize] != 0 {
-            return t.max(0.05);
-        }
-
-        t += step;
+        i += 1;
     }
-
-    32.0
+    None
 }
 
-fn is_wall(x: i32, y: i32) -> bool {
-    let ix = x >> FRACBITS;
-    let iy = y >> FRACBITS;
-
-    if ix < 0 || iy < 0 || ix >= MAP_W as i32 || iy >= MAP_H as i32 {
-        return true;
+fn detect_game_mode(wad: &WadData) -> GameMode {
+    if wad.lump_exists("MAP01") {
+        GameMode::Commercial
+    } else if wad.lump_exists("E4M1") {
+        GameMode::Retail
+    } else if wad.lump_exists("E3M1") {
+        GameMode::Registered
+    } else {
+        GameMode::Shareware
     }
-
-    MAP[iy as usize * MAP_W + ix as usize] != 0
 }

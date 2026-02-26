@@ -7,3 +7,10 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 engine_render = { path = "../engine_render" }
+gameplay.workspace = true
+render-trait.workspace = true
+software25d.workspace = true
+sound-nosnd.workspace = true
+sound-traits.workspace = true
+wad.workspace = true
+log.workspace = true
