@@ -1,4 +1,4 @@
-# web-doom
+# ferrum-doom
 
 Browser-playable Doom runtime using a Rust/WASM engine boundary and a minimal TypeScript host.
 
